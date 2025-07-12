@@ -17,5 +17,15 @@
   "bugs": {
     "url": "https://github.com/fasakinhenry/joggle-api/issues"
   },
-  "homepage": "https://github.com/fasakinhenry/joggle-api#readme"
+  "homepage": "https://github.com/fasakinhenry/joggle-api#readme",
+  "dependencies": {
+    "bcryptjs": "^3.0.2",
+    "cors": "^2.8.5",
+    "dotenv": "^17.2.0",
+    "express": "^5.1.0",
+    "express-validator": "^7.2.1",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.16.3",
+    "nodemailer": "^7.0.5"
+  }
 }
