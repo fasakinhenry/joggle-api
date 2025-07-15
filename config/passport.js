@@ -4,7 +4,6 @@ const FacebookStrategy = require('passport-facebook').Strategy;
 const LinkedInStrategy = require('passport-linkedin-oauth2').Strategy;
 const GitHubStrategy = require('passport-github2').Strategy;
 const User = require('../models/User');
-const jwt = require('jsonwebtoken');
 
 passport.serializeUser((user, done) => done(null, user.id));
 passport.deserializeUser(async (id, done) => {
@@ -25,9 +24,10 @@ passport.use(new GoogleStrategy({
       if (!user) {
         user = new User({
           email: profile.emails[0].value,
-          username: profile.displayName,
+          username: profile.displayName || `user${Date.now()}`,
           isVerified: true,
-          oauthProviders: [{ provider: 'google', providerId: profile.id, accessToken, refreshToken }]
+          oauthProviders: [{ provider: 'google', providerId: profile.id, accessToken, refreshToken }],
+          badges: ['Nova Explorer'] // Award initial badge
         });
         await user.save();
       } else {
@@ -55,9 +55,10 @@ passport.use(new FacebookStrategy({
       if (!user) {
         user = new User({
           email: profile.emails[0].value,
-          username: profile.displayName,
+          username: profile.displayName || `user${Date.now()}`,
           isVerified: true,
-          oauthProviders: [{ provider: 'facebook', providerId: profile.id, accessToken, refreshToken }]
+          oauthProviders: [{ provider: 'facebook', providerId: profile.id, accessToken, refreshToken }],
+          badges: ['Nova Explorer']
         });
         await user.save();
       } else {
@@ -76,9 +77,7 @@ passport.use(new LinkedInStrategy({
   clientID: process.env.LINKEDIN_CLIENT_ID,
   clientSecret: process.env.LINKEDIN_CLIENT_SECRET,
   callbackURL: '/api/auth/linkedin/callback',
-  scope: ['rസ
-
-ystem: r_email', 'profile']
+  scope: ['r_emailaddress', 'r_liteprofile']
 }, async (accessToken, refreshToken, profile, done) => {
   try {
     let user = await User.findOne({ 'oauthProviders.providerId': profile.id, 'oauthProviders.provider': 'linkedin' });
@@ -87,9 +86,10 @@ ystem: r_email', 'profile']
       if (!user) {
         user = new User({
           email: profile.emails[0].value,
-          username: profile.displayName,
+          username: profile.displayName || `user${Date.now()}`,
           isVerified: true,
-          oauthProviders: [{ provider: 'linkedin', providerId: profile.id, accessToken, refreshToken }]
+          oauthProviders: [{ provider: 'linkedin', providerId: profile.id, accessToken, refreshToken }],
+          badges: ['Nova Explorer']
         });
         await user.save();
       } else {
@@ -116,9 +116,10 @@ passport.use(new GitHubStrategy({
       if (!user) {
         user = new User({
           email: profile.emails[0].value,
-          username: profile.displayName,
+          username: profile.displayName || `user${Date.now()}`,
           isVerified: true,
-          oauthProviders: [{ provider: 'github', providerId: profile.id, accessToken, refreshToken }]
+          oauthProviders: [{ provider: 'github', providerId: profile.id, accessToken, refreshToken }],
+          badges: ['Nova Explorer']
         });
         await user.save();
       } else {
