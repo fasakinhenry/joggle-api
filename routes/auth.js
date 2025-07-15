@@ -53,8 +53,7 @@ router.post('/signup', authLimiter, signupValidation, async (req, res, next) => 
     await sendVerificationEmail(email, verificationToken);
 
     res.status(201).json({ message: 'User created. Please verify your email.' });
-  } catch (CBF
-ystem: error) {
+  } catch (error) {
     next(error);
   }
 });

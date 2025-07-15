@@ -1,24 +1,32 @@
-const { Resend } = require('resend');
+const { Resend } = require('@resend/resend');
 
 const resend = new Resend(process.env.RESEND_API_KEY);
 
-const sendVerificationEmail = async (email, verificationToken) => {
-  const verificationUrl = `${process.env.FRONTEND_URL}/verify-email?token=${verificationToken}`;
-
+const sendVerificationEmail = async (
+  email,
+  token,
+  subject = 'Verify Your Email',
+  htmlContent
+) => {
+  const url = subject.includes('Password')
+    ? `${process.env.FRONTEND_URL}/reset-password?token=${token}`
+    : `${process.env.FRONTEND_URL}/verify-email?token=${token}`;
   try {
     await resend.emails.send({
-      from: 'onboarding@resend.dev', // Replace with your verified domain or use 'onboarding@resend.dev' for testing
+      from: 'no-reply@your-elearning-app.com',
       to: email,
-      subject: 'Verify Your Email',
-      html: `
-        <h4>Please verify your email</h4>
-        <p>Click <a href="${verificationUrl}">here</a> to verify your email address.</p>
+      subject,
+      html:
+        htmlContent ||
+        `
+        <h4>${subject}</h4>
+        <p>Click <a href="${url}">here</a> to ${subject.toLowerCase()}. ${subject.includes('Password') ? 'This link expires in 1 hour.' : ''}</p>
       `,
     });
-    console.log(`Verification email sent to ${email}`);
+    console.log(`Email sent to ${email}`);
   } catch (error) {
-    console.error('Error sending verification email:', error);
-    throw new Error('Failed to send verification email');
+    console.error('Error sending email:', error);
+    throw new Error('Failed to send email');
   }
 };
 
