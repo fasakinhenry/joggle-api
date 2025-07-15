@@ -69,6 +69,12 @@ const userSchema = new mongoose.Schema({
   badges: [
     {
       type: String,
+      enum: [
+        'Nova Explorer',
+        'Stellar Pioneer',
+        'Galactic Scholar',
+        'Cosmic Voyager',
+      ],
     },
   ],
   languages: [
