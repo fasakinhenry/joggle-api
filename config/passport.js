@@ -1,134 +1,160 @@
 const passport = require('passport');
-const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const FacebookStrategy = require('passport-facebook').Strategy;
-const LinkedInStrategy = require('passport-linkedin-oauth2').Strategy;
+const GoogleStrategy = require('passport-google-oauth20').Strategy;
 const GitHubStrategy = require('passport-github2').Strategy;
-const User = require('../models/User');
+const LinkedInStrategy = require('passport-linkedin-oauth2').Strategy;
+const User = require('../models/user'); // Adjust path to your User model
+require('dotenv').config();
 
-passport.serializeUser((user, done) => done(null, user.id));
-passport.deserializeUser(async (id, done) => {
-  const user = await User.findById(id);
-  done(null, user);
+passport.serializeUser((user, done) => {
+  done(null, user.id);
 });
 
-// Google Strategy
-passport.use(new GoogleStrategy({
-  clientID: process.env.GOOGLE_CLIENT_ID,
-  clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-  callbackURL: '/api/auth/google/callback'
-}, async (accessToken, refreshToken, profile, done) => {
+passport.deserializeUser(async (id, done) => {
   try {
-    let user = await User.findOne({ 'oauthProviders.providerId': profile.id, 'oauthProviders.provider': 'google' });
-    if (!user) {
-      user = await User.findOne({ email: profile.emails[0].value });
-      if (!user) {
-        user = new User({
-          email: profile.emails[0].value,
-          username: profile.displayName || `user${Date.now()}`,
-          isVerified: true,
-          oauthProviders: [{ provider: 'google', providerId: profile.id, accessToken, refreshToken }],
-          badges: ['Nova Explorer'] // Award initial badge
-        });
-        await user.save();
-      } else {
-        user.oauthProviders.push({ provider: 'google', providerId: profile.id, accessToken, refreshToken });
-        await user.save();
-      }
-    }
+    const user = await User.findById(id);
     done(null, user);
-  } catch (error) {
-    done(error);
+  } catch (err) {
+    done(err, null);
   }
-}));
+});
 
 // Facebook Strategy
-passport.use(new FacebookStrategy({
-  clientID: process.env.FACEBOOK_CLIENT_ID,
-  clientSecret: process.env.FACEBOOK_CLIENT_SECRET,
-  callbackURL: '/api/auth/facebook/callback',
-  profileFields: ['id', 'emails', 'displayName']
-}, async (accessToken, refreshToken, profile, done) => {
-  try {
-    let user = await User.findOne({ 'oauthProviders.providerId': profile.id, 'oauthProviders.provider': 'facebook' });
-    if (!user) {
-      user = await User.findOne({ email: profile.emails[0].value });
-      if (!user) {
+passport.use(
+  new FacebookStrategy(
+    {
+      clientID: process.env.FACEBOOK_APP_ID,
+      clientSecret: process.env.FACEBOOK_APP_SECRET,
+      callbackURL: `${process.env.BACKEND_URL}/auth/facebook/callback`,
+      profileFields: ['id', 'displayName', 'email'],
+    },
+    async (accessToken, refreshToken, profile, done) => {
+      try {
+        let user = await User.findOne({ 'facebook.id': profile.id });
+        if (user) {
+          return done(null, user);
+        }
         user = new User({
-          email: profile.emails[0].value,
-          username: profile.displayName || `user${Date.now()}`,
-          isVerified: true,
-          oauthProviders: [{ provider: 'facebook', providerId: profile.id, accessToken, refreshToken }],
-          badges: ['Nova Explorer']
+          facebook: {
+            id: profile.id,
+            token: accessToken,
+            name: profile.displayName,
+            email: profile.emails ? profile.emails[0].value : null,
+          },
+          email: profile.emails ? profile.emails[0].value : null,
+          name: profile.displayName,
+          isVerified: true, // OAuth users are auto-verified
         });
         await user.save();
-      } else {
-        user.oauthProviders.push({ provider: 'facebook', providerId: profile.id, accessToken, refreshToken });
-        await user.save();
+        done(null, user);
+      } catch (err) {
+        done(err, null);
       }
     }
-    done(null, user);
-  } catch (error) {
-    done(error);
-  }
-}));
+  )
+);
 
-// LinkedIn Strategy
-passport.use(new LinkedInStrategy({
-  clientID: process.env.LINKEDIN_CLIENT_ID,
-  clientSecret: process.env.LINKEDIN_CLIENT_SECRET,
-  callbackURL: '/api/auth/linkedin/callback',
-  scope: ['r_emailaddress', 'r_liteprofile']
-}, async (accessToken, refreshToken, profile, done) => {
-  try {
-    let user = await User.findOne({ 'oauthProviders.providerId': profile.id, 'oauthProviders.provider': 'linkedin' });
-    if (!user) {
-      user = await User.findOne({ email: profile.emails[0].value });
-      if (!user) {
+// Google Strategy
+passport.use(
+  new GoogleStrategy(
+    {
+      clientID: process.env.GOOGLE_CLIENT_ID,
+      clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+      callbackURL: `${process.env.BACKEND_URL}/auth/google/callback`,
+    },
+    async (accessToken, refreshToken, profile, done) => {
+      try {
+        let user = await User.findOne({ 'google.id': profile.id });
+        if (user) {
+          return done(null, user);
+        }
         user = new User({
+          google: {
+            id: profile.id,
+            token: accessToken,
+            name: profile.displayName,
+            email: profile.emails[0].value,
+          },
           email: profile.emails[0].value,
-          username: profile.displayName || `user${Date.now()}`,
+          name: profile.displayName,
           isVerified: true,
-          oauthProviders: [{ provider: 'linkedin', providerId: profile.id, accessToken, refreshToken }],
-          badges: ['Nova Explorer']
         });
         await user.save();
-      } else {
-        user.oauthProviders.push({ provider: 'linkedin', providerId: profile.id, accessToken, refreshToken });
-        await user.save();
+        done(null, user);
+      } catch (err) {
+        done(err, null);
       }
     }
-    done(null, user);
-  } catch (error) {
-    done(error);
-  }
-}));
+  )
+);
 
 // GitHub Strategy
-passport.use(new GitHubStrategy({
-  clientID: process.env.GITHUB_CLIENT_ID,
-  clientSecret: process.env.GITHUB_CLIENT_SECRET,
-  callbackURL: '/api/auth/github/callback'
-}, async (accessToken, refreshToken, profile, done) => {
-  try {
-    let user = await User.findOne({ 'oauthProviders.providerId': profile.id, 'oauthProviders.provider': 'github' });
-    if (!user) {
-      user = await User.findOne({ email: profile.emails[0].value });
-      if (!user) {
+passport.use(
+  new GitHubStrategy(
+    {
+      clientID: process.env.GITHUB_CLIENT_ID,
+      clientSecret: process.env.GITHUB_CLIENT_SECRET,
+      callbackURL: `${process.env.BACKEND_URL}/auth/github/callback`,
+    },
+    async (accessToken, refreshToken, profile, done) => {
+      try {
+        let user = await User.findOne({ 'github.id': profile.id });
+        if (user) {
+          return done(null, user);
+        }
         user = new User({
-          email: profile.emails[0].value,
-          username: profile.displayName || `user${Date.now()}`,
+          github: {
+            id: profile.id,
+            token: accessToken,
+            name: profile.displayName || profile.username,
+            email: profile.emails ? profile.emails[0].value : null,
+          },
+          email: profile.emails ? profile.emails[0].value : null,
+          name: profile.displayName || profile.username,
           isVerified: true,
-          oauthProviders: [{ provider: 'github', providerId: profile.id, accessToken, refreshToken }],
-          badges: ['Nova Explorer']
         });
         await user.save();
-      } else {
-        user.oauthProviders.push({ provider: 'github', providerId: profile.id, accessToken, refreshToken });
-        await user.save();
+        done(null, user);
+      } catch (err) {
+        done(err, null);
       }
     }
-    done(null, user);
-  } catch (error) {
-    done(error);
-  }
-}));
+  )
+);
+
+// LinkedIn Strategy
+passport.use(
+  new LinkedInStrategy(
+    {
+      clientID: process.env.LINKEDIN_CLIENT_ID,
+      clientSecret: process.env.LINKEDIN_CLIENT_SECRET,
+      callbackURL: `${process.env.BACKEND_URL}/auth/linkedin/callback`,
+      scope: ['r_emailaddress', 'r_liteprofile'],
+    },
+    async (accessToken, refreshToken, profile, done) => {
+      try {
+        let user = await User.findOne({ 'linkedin.id': profile.id });
+        if (user) {
+          return done(null, user);
+        }
+        user = new User({
+          linkedin: {
+            id: profile.id,
+            token: accessToken,
+            name: profile.displayName,
+            email: profile.emails ? profile.emails[0].value : null,
+          },
+          email: profile.emails ? profile.emails[0].value : null,
+          name: profile.displayName,
+          isVerified: true,
+        });
+        await user.save();
+        done(null, user);
+      } catch (err) {
+        done(err, null);
+      }
+    }
+  )
+);
+
+module.exports = passport;
