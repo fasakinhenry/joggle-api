@@ -1,10 +1,12 @@
 const passport = require('passport');
-const FacebookStrategy = require('passport-facebook').Strategy;
+const LocalStrategy = require('passport-local').Strategy;
 const GoogleStrategy = require('passport-google-oauth20').Strategy;
-const GitHubStrategy = require('passport-github2').Strategy;
+const FacebookStrategy = require('passport-facebook').Strategy;
 const LinkedInStrategy = require('passport-linkedin-oauth2').Strategy;
-const User = require('../models/user'); // Adjust path to your User model
-require('dotenv').config();
+const GitHubStrategy = require('passport-github2').Strategy;
+const bcrypt = require('bcryptjs');
+const User = require('../models/User');
+const logger = require('./logger');
 
 passport.serializeUser((user, done) => {
   done(null, user.id);
@@ -14,44 +16,27 @@ passport.deserializeUser(async (id, done) => {
   try {
     const user = await User.findById(id);
     done(null, user);
-  } catch (err) {
-    done(err, null);
+  } catch (error) {
+    done(error);
   }
 });
 
-// Facebook Strategy
+// Local Strategy
 passport.use(
-  new FacebookStrategy(
-    {
-      clientID: process.env.FACEBOOK_APP_ID,
-      clientSecret: process.env.FACEBOOK_APP_SECRET,
-      callbackURL: `${process.env.BACKEND_URL}/auth/facebook/callback`,
-      profileFields: ['id', 'displayName', 'email'],
-    },
-    async (accessToken, refreshToken, profile, done) => {
-      try {
-        let user = await User.findOne({ 'facebook.id': profile.id });
-        if (user) {
-          return done(null, user);
-        }
-        user = new User({
-          facebook: {
-            id: profile.id,
-            token: accessToken,
-            name: profile.displayName,
-            email: profile.emails ? profile.emails[0].value : null,
-          },
-          email: profile.emails ? profile.emails[0].value : null,
-          name: profile.displayName,
-          isVerified: true, // OAuth users are auto-verified
-        });
-        await user.save();
-        done(null, user);
-      } catch (err) {
-        done(err, null);
-      }
+  new LocalStrategy({ usernameField: 'email' }, async (email, password, done) => {
+    try {
+      const user = await User.findOne({ email });
+      if (!user) return done(null, false, { message: 'Invalid credentials' });
+      if (!user.isVerified) return done(null, false, { message: 'Email not verified' });
+
+      const isMatch = await bcrypt.compare(password, user.password);
+      if (!isMatch) return done(null, false, { message: 'Invalid credentials' });
+
+      return done(null, user);
+    } catch (error) {
+      return done(error);
     }
-  )
+  })
 );
 
 // Google Strategy
@@ -64,25 +49,48 @@ passport.use(
     },
     async (accessToken, refreshToken, profile, done) => {
       try {
-        let user = await User.findOne({ 'google.id': profile.id });
-        if (user) {
-          return done(null, user);
-        }
-        user = new User({
-          google: {
-            id: profile.id,
-            token: accessToken,
-            name: profile.displayName,
+        let user = await User.findOne({ 'socialProfiles.google': profile.id });
+        if (!user) {
+          user = new User({
             email: profile.emails[0].value,
-          },
-          email: profile.emails[0].value,
-          name: profile.displayName,
-          isVerified: true,
-        });
-        await user.save();
-        done(null, user);
-      } catch (err) {
-        done(err, null);
+            username: profile.displayName,
+            isVerified: true,
+            socialProfiles: { google: profile.id },
+          });
+          await user.save();
+        }
+        return done(null, user);
+      } catch (error) {
+        return done(error);
+      }
+    }
+  )
+);
+
+// Facebook Strategy
+passport.use(
+  new FacebookStrategy(
+    {
+      clientID: process.env.FACEBOOK_CLIENT_ID,
+      clientSecret: process.env.FACEBOOK_CLIENT_SECRET,
+      callbackURL: `${process.env.BACKEND_URL}/auth/facebook/callback`,
+      profileFields: ['id', 'emails', 'displayName'],
+    },
+    async (accessToken, refreshToken, profile, done) => {
+      try {
+        let user = await User.findOne({ 'socialProfiles.facebook': profile.id });
+        if (!user) {
+          user = new User({
+            email: profile.emails[0].value,
+            username: profile.displayName,
+            isVerified: true,
+            socialProfiles: { facebook: profile.id },
+          });
+          await user.save();
+        }
+        return done(null, user);
+      } catch (error) {
+        return done(error);
       }
     }
   )
@@ -98,25 +106,19 @@ passport.use(
     },
     async (accessToken, refreshToken, profile, done) => {
       try {
-        let user = await User.findOne({ 'github.id': profile.id });
-        if (user) {
-          return done(null, user);
+        let user = await User.findOne({ 'socialProfiles.github': profile.id });
+        if (!user) {
+          user = new User({
+            email: profile.emails[0].value,
+            username: profile.displayName,
+            isVerified: true,
+            socialProfiles: { github: profile.id },
+          });
+          await user.save();
         }
-        user = new User({
-          github: {
-            id: profile.id,
-            token: accessToken,
-            name: profile.displayName || profile.username,
-            email: profile.emails ? profile.emails[0].value : null,
-          },
-          email: profile.emails ? profile.emails[0].value : null,
-          name: profile.displayName || profile.username,
-          isVerified: true,
-        });
-        await user.save();
-        done(null, user);
-      } catch (err) {
-        done(err, null);
+        return done(null, user);
+      } catch (error) {
+        return done(error);
       }
     }
   )
@@ -133,25 +135,19 @@ passport.use(
     },
     async (accessToken, refreshToken, profile, done) => {
       try {
-        let user = await User.findOne({ 'linkedin.id': profile.id });
-        if (user) {
-          return done(null, user);
+        let user = await User.findOne({ 'socialProfiles.linkedin': profile.id });
+        if (!user) {
+          user = new User({
+            email: profile.emails[0].value,
+            username: profile.displayName,
+            isVerified: true,
+            socialProfiles: { linkedin: profile.id },
+          });
+          await user.save();
         }
-        user = new User({
-          linkedin: {
-            id: profile.id,
-            token: accessToken,
-            name: profile.displayName,
-            email: profile.emails ? profile.emails[0].value : null,
-          },
-          email: profile.emails ? profile.emails[0].value : null,
-          name: profile.displayName,
-          isVerified: true,
-        });
-        await user.save();
-        done(null, user);
-      } catch (err) {
-        done(err, null);
+        return done(null, user);
+      } catch (error) {
+        return done(error);
       }
     }
   )
