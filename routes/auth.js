@@ -7,7 +7,7 @@ const crypto = require('crypto');
 const User = require('../models/User');
 const authMiddleware = require('../middleware/auth');
 const { authLimiter } = require('../middleware/rateLimit');
-const { sendVerificationEmail } = require('../config/email');
+const { sendVerificationEmail } = require('../config/email2');
 const passport = require('passport');
 
 // Validation middleware for signup
