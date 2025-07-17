@@ -1,442 +1,266 @@
 const express = require('express');
-const router = express.Router();
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
-const { check, validationResult } = require('express-validator');
-const crypto = require('crypto');
-const User = require('../models/User');
-const authMiddleware = require('../middleware/auth2');
-const { authLimiter } = require('../middleware/rateLimit');
-const { sendVerificationEmail } = require('../config/email2');
 const passport = require('passport');
+const { body, validationResult } = require('express-validator');
+const jwt = require('jsonwebtoken');
+const { sendEmail } = require('../config/email');
+const { authLimiter } = require('../middleware/rateLimit');
+const { ensureAuthenticated } = require('../middleware/auth');
+const User = require('../models/User');
+const logger = require('../config/logger');
 
-// Validation middleware for signup
-const signupValidation = [
-  check('email').isEmail().withMessage('Invalid email address'),
-  check('password')
-    .isLength({ min: 8 })
-    .withMessage('Password must be at least 8 characters')
-    .matches(/[A-Z]/)
-    .withMessage('Password must contain at least one uppercase letter')
-    .matches(/[a-z]/)
-    .withMessage('Password must contain at least one lowercase letter')
-    .matches(/[0-9]/)
-    .withMessage('Password must contain at least one number'),
-  check('username')
-    .isLength({ min: 3 })
-    .withMessage('Username must be at least 3 characters'),
+const router = express.Router();
+
+// Validation middleware
+const validateSignup = [
+  body('email').isEmail().normalizeEmail(),
+  body('password').isLength({ min: 8 }),
+  body('username').trim().notEmpty(),
 ];
 
-// Signup route
-router.post(
-  '/signup',
-  authLimiter,
-  signupValidation,
-  async (req, res, next) => {
-    try {
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) {
-        return res.status(400).json({ errors: errors.array() });
-      }
+const validateLogin = [
+  body('email').isEmail().normalizeEmail(),
+  body('password').notEmpty(),
+];
 
-      const { email, password, username } = req.body;
+const validatePasswordReset = [
+  body('email').isEmail().normalizeEmail(),
+];
 
-      const existingUser = await User.findOne({ email });
-      if (existingUser) {
-        return res.status(400).json({ error: 'Email already exists' });
-      }
+const validatePasswordResetConfirm = [
+  body('token').notEmpty(),
+  body('newPassword').isLength({ min: 8 }),
+];
 
-      const salt = await bcrypt.genSalt(10);
-      const hashedPassword = await bcrypt.hash(password, salt);
-      const verificationToken = crypto.randomBytes(32).toString('hex');
-
-      const user = new User({
-        email,
-        password: hashedPassword,
-        username,
-        verificationToken,
-        isVerified: false,
-        badges: ['Nova Explorer'],
-      });
-
-      await user.save();
-      await sendVerificationEmail(email, verificationToken);
-
-      res
-        .status(201)
-        .json({ message: 'User created. Please verify your email.' });
-    } catch (error) {
-      next(error);
-    }
+// Signup
+router.post('/signup', authLimiter, validateSignup, async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    logger.warn('Signup validation failed', errors.array());
+    return res.status(400).json({ errors: errors.array() });
   }
-);
 
-// Email verification route
-router.get('/verify-email', async (req, res, next) => {
+  const { email, password, username } = req.body;
+
   try {
-    const { token } = req.query;
-    const user = await User.findOne({ verificationToken: token });
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      logger.warn(`Signup attempt with existing email: ${email}`);
+      return res.status(400).json({ error: 'Email already exists' });
+    }
+
+    const verificationToken = jwt.sign({ email }, process.env.JWT_SECRET, { expiresIn: '1d' });
+    const user = new User({ email, password, username, verificationToken });
+    await user.save();
+
+    const verificationUrl = `${process.env.BACKEND_URL}/api/auth/verify-email?token=${verificationToken}`;
+    await sendEmail(
+      email,
+      'Verify Your Email',
+      `<p>Please verify your email by clicking <a href="${verificationUrl}">here</a>.</p>`
+    );
+
+    res.status(201).json({ message: 'User created, verification email sent' });
+  } catch (error) {
+    logger.error('Signup error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Verify Email
+router.get('/verify-email', async (req, res) => {
+  const { token } = req.query;
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findOne({ email: decoded.email, verificationToken: token });
 
     if (!user) {
-      return res
-        .status(400)
-        .json({ error: 'Invalid or expired verification token' });
+      logger.warn('Invalid or expired verification token');
+      return res.status(400).json({ error: 'Invalid or expired token' });
     }
 
     user.isVerified = true;
     user.verificationToken = undefined;
     await user.save();
 
-    res.json({ message: 'Email verified successfully' });
+    req.login(user, (err) => {
+      if (err) {
+        logger.error('Login after verification failed:', err);
+        return res.status(500).json({ error: 'Server error' });
+      }
+      res.redirect(`${process.env.FRONTEND_URL}/launchpad`);
+    });
   } catch (error) {
-    next(error);
+    logger.error('Verify email error:', error);
+    res.status(400).json({ error: 'Invalid or expired token' });
   }
 });
 
-// Validation middleware for login
-const loginValidation = [
-  check('email').isEmail().withMessage('Invalid email address'),
-  check('password').notEmpty().withMessage('Password is required'),
-];
-
-// Login route
-router.post('/login', authLimiter, loginValidation, async (req, res, next) => {
-  try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
+// Login
+router.post('/login', authLimiter, validateLogin, (req, res, next) => {
+  passport.authenticate('local', (err, user, info) => {
+    if (err) {
+      logger.error('Login error:', err);
+      return res.status(500).json({ error: 'Server error' });
+    }
+    if (!user) {
+      logger.warn('Login failed:', info.message);
+      return res.status(401).json({ error: info.message });
     }
 
-    const { email, password } = req.body;
+    req.login(user, (err) => {
+      if (err) {
+        logger.error('Session login error:', err);
+        return res.status(500).json({ error: 'Server error' });
+      }
+      res.json({ message: 'Login successful', user: { email: user.email, username: user.username } });
+    });
+  })(req, res, next);
+});
+
+// OAuth Routes
+router.get('/google', passport.authenticate('google', { scope: ['profile', 'email'] }));
+router.get('/google/callback', passport.authenticate('google', { failureRedirect: `${process.env.FRONTEND_URL}/auth/signin?error=auth_failed` }), (req, res) => {
+  res.redirect(`${process.env.FRONTEND_URL}/launchpad`);
+});
+
+router.get('/facebook', passport.authenticate('facebook', { scope: ['email'] }));
+router.get('/facebook/callback', passport.authenticate('facebook', { failureRedirect: `${process.env.FRONTEND_URL}/auth/signin?error=auth_failed` }), (req, res) => {
+  res.redirect(`${process.env.FRONTEND_URL}/launchpad`);
+});
+
+router.get('/github', passport.authenticate('github', { scope: ['user:email'] }));
+router.get('/github/callback', passport.authenticate('github', { failureRedirect: `${process.env.FRONTEND_URL}/auth/signin?error=auth_failed` }), (req, res) => {
+  res.redirect(`${process.env.FRONTEND_URL}/launchpad`);
+});
+
+router.get('/linkedin', passport.authenticate('linkedin', { scope: ['r_emailaddress', 'r_liteprofile'] }));
+router.get('/linkedin/callback', passport.authenticate('linkedin', { failureRedirect: `${process.env.FRONTEND_URL}/auth/signin?error=auth_failed` }), (req, res) => {
+  res.redirect(`${process.env.FRONTEND_URL}/launchpad`);
+});
+
+// Password Reset Request
+router.post('/password-reset', authLimiter, validatePasswordReset, async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    logger.warn('Password reset validation failed', errors.array());
+    return res.status(400).json({ errors: errors.array() });
+  }
+
+  const { email } = req.body;
+
+  try {
     const user = await User.findOne({ email });
+    if (!user) {
+      logger.warn(`Password reset requested for non-existent email: ${email}`);
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const resetToken = jwt.sign({ email }, process.env.JWT_SECRET, { expiresIn: '1h' });
+    user.resetPasswordToken = resetToken;
+    user.resetPasswordExpires = Date.now() + 3600000; // 1 hour
+    await user.save();
+
+    const resetUrl = `${process.env.FRONTEND_URL}/auth/reset-password?token=${resetToken}`;
+    await sendEmail(
+      email,
+      'Password Reset Request',
+      `<p>Reset your password by clicking <a href="${resetUrl}">here</a>. Link expires in 1 hour.</p>`
+    );
+
+    res.json({ message: 'Password reset email sent' });
+  } catch (error) {
+    logger.error('Password reset error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Password Reset Confirm
+router.post('/password-reset/confirm', authLimiter, validatePasswordResetConfirm, async (req, res) => {
+  const errors = validationResult(req);
+  if (!errors.isEmpty()) {
+    logger.warn('Password reset confirm validation failed', errors.array());
+    return res.status(400).json({ errors: errors.array() });
+  }
+
+  const { token, newPassword } = req.body;
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findOne({
+      email: decoded.email,
+      resetPasswordToken: token,
+      resetPasswordExpires: { $gt: Date.now() },
+    });
 
     if (!user) {
-      return res.status(400).json({ error: 'Invalid credentials' });
+      logger.warn('Invalid or expired password reset token');
+      return res.status(400).json({ error: 'Invalid or expired token' });
     }
 
-    if (!user.isVerified) {
-      return res.status(400).json({ error: 'Please verify your email first' });
-    }
-
-    if (user.password) {
-      const isMatch = await bcrypt.compare(password, user.password);
-      if (!isMatch) {
-        return res.status(400).json({ error: 'Invalid credentials' });
-      }
-    } else {
-      return res
-        .status(400)
-        .json({ error: 'Account linked with social login' });
-    }
-
-    const accessToken = jwt.sign({ userId: user._id }, process.env.JWT_SECRET, {
-      expiresIn: '1h',
-    });
-    const refreshToken = jwt.sign(
-      { userId: user._id },
-      process.env.REFRESH_TOKEN_SECRET,
-      { expiresIn: '7d' }
-    );
-
-    user.refreshToken = refreshToken;
+    user.password = newPassword;
+    user.resetPasswordToken = undefined;
+    user.resetPasswordExpires = undefined;
     await user.save();
 
-    res.json({
-      accessToken,
-      refreshToken,
-      user: {
-        id: user._id,
-        email: user.email,
-        username: user.username,
-        badges: user.badges,
-      },
+    res.json({ message: 'Password reset successful' });
+  } catch (error) {
+    logger.error('Password reset confirm error:', error);
+    res.status(400).json({ error: 'Invalid or expired token' });
+  }
+});
+
+// Logout
+router.post('/logout', (req, res) => {
+  req.logout((err) => {
+    if (err) {
+      logger.error('Logout error:', err);
+      return res.status(500).json({ error: 'Server error' });
+    }
+    req.session.destroy((err) => {
+      if (err) {
+        logger.error('Session destroy error:', err);
+        return res.status(500).json({ error: 'Server error' });
+      }
+      res.clearCookie('connect.sid');
+      res.json({ message: 'Logout successful' });
     });
-  } catch (error) {
-    next(error);
-  }
-});
-
-// Refresh token route
-router.post('/refresh-token', authLimiter, async (req, res, next) => {
-  try {
-    const { refreshToken } = req.body;
-    if (!refreshToken) {
-      return res.status(401).json({ error: 'Refresh token required' });
-    }
-
-    const decoded = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET);
-    const user = await User.findById(decoded.userId).select('-password');
-
-    if (!user || user.refreshToken !== refreshToken) {
-      return res.status(401).json({ error: 'Invalid refresh token' });
-    }
-
-    const newAccessToken = jwt.sign(
-      { userId: user._id },
-      process.env.JWT_SECRET,
-      { expiresIn: '1h' }
-    );
-    const newRefreshToken = jwt.sign(
-      { userId: user._id },
-      process.env.REFRESH_TOKEN_SECRET,
-      { expiresIn: '7d' }
-    );
-
-    user.refreshToken = newRefreshToken;
-    await user.save();
-
-    res.json({
-      accessToken: newAccessToken,
-      refreshToken: newRefreshToken,
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-// Password reset request
-const resetValidation = [
-  check('email').isEmail().withMessage('Invalid email address'),
-];
-
-router.post(
-  '/password-reset',
-  authLimiter,
-  resetValidation,
-  async (req, res, next) => {
-    try {
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) {
-        return res.status(400).json({ errors: errors.array() });
-      }
-
-      const { email } = req.body;
-      const user = await User.findOne({ email });
-
-      if (!user) {
-        return res.status(400).json({ error: 'Email not found' });
-      }
-
-      const resetToken = crypto.randomBytes(32).toString('hex');
-      user.resetPasswordToken = resetToken;
-      user.resetPasswordExpires = Date.now() + 3600000; // 1 hour
-      await user.save();
-
-      const resetUrl = `${process.env.FRONTEND_URL}/reset-password?token=${resetToken}`;
-      await sendVerificationEmail(
-        email,
-        resetToken,
-        'Reset Your Password',
-        `
-      <h4>Reset Your Password</h4>
-      <p>Click <a href="${resetUrl}">here</a> to reset your password. This link expires in 1 hour.</p>
-    `
-      );
-
-      res.json({ message: 'Password reset email sent' });
-    } catch (error) {
-      next(error);
-    }
-  }
-);
-
-// Password reset confirm
-const resetConfirmValidation = [
-  check('token').notEmpty().withMessage('Reset token required'),
-  check('newPassword')
-    .isLength({ min: 8 })
-    .withMessage('Password must be at least 8 characters')
-    .matches(/[A-Z]/)
-    .withMessage('Password must contain at least one uppercase letter')
-    .matches(/[a-z]/)
-    .withMessage('Password must contain at least one lowercase letter')
-    .matches(/[0-9]/)
-    .withMessage('Password must contain at least one number'),
-];
-
-router.post(
-  '/password-reset/confirm',
-  authLimiter,
-  resetConfirmValidation,
-  async (req, res, next) => {
-    try {
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) {
-        return res.status(400).json({ errors: errors.array() });
-      }
-
-      const { token, newPassword } = req.body;
-      const user = await User.findOne({
-        resetPasswordToken: token,
-        resetPasswordExpires: { $gt: Date.now() },
-      });
-
-      if (!user) {
-        return res
-          .status(400)
-          .json({ error: 'Invalid or expired reset token' });
-      }
-
-      const salt = await bcrypt.genSalt(10);
-      user.password = await bcrypt.hash(newPassword, salt);
-      user.resetPasswordToken = undefined;
-      user.resetPasswordExpires = undefined;
-      user.refreshToken = undefined; // Invalidate sessions
-      await user.save();
-
-      res.json({ message: 'Password reset successfully' });
-    } catch (error) {
-      next(error);
-    }
-  }
-);
-
-// OAuth routes
-router.get(
-  '/google',
-  passport.authenticate('google', { scope: ['profile', 'email'] })
-);
-router.get(
-  '/google/callback',
-  passport.authenticate('google', { session: false }),
-  (req, res) => {
-    const accessToken = jwt.sign(
-      { userId: req.user._id },
-      process.env.JWT_SECRET,
-      { expiresIn: '1h' }
-    );
-    const refreshToken = jwt.sign(
-      { userId: req.user._id },
-      process.env.REFRESH_TOKEN_SECRET,
-      { expiresIn: '7d' }
-    );
-
-    req.user.refreshToken = refreshToken;
-    req.user.save();
-
-    res.redirect(
-      `${process.env.FRONTEND_URL}/auth/callback?accessToken=${accessToken}&refreshToken=${refreshToken}`
-    );
-  }
-);
-
-router.get(
-  '/facebook',
-  passport.authenticate('facebook', { scope: ['email'] })
-);
-router.get(
-  '/facebook/callback',
-  passport.authenticate('facebook', { session: false }),
-  (req, res) => {
-    const accessToken = jwt.sign(
-      { userId: req.user._id },
-      process.env.JWT_SECRET,
-      { expiresIn: '1h' }
-    );
-    const refreshToken = jwt.sign(
-      { userId: req.user._id },
-      process.env.REFRESH_TOKEN_SECRET,
-      { expiresIn: '7d' }
-    );
-
-    req.user.refreshToken = refreshToken;
-    req.user.save();
-
-    res.redirect(
-      `${process.env.FRONTEND_URL}/auth/callback?accessToken=${accessToken}&refreshToken=${refreshToken}`
-    );
-  }
-);
-
-router.get(
-  '/linkedin',
-  passport.authenticate('linkedin', {
-    scope: ['r_emailaddress', 'r_liteprofile'],
-  })
-);
-router.get(
-  '/linkedin/callback',
-  passport.authenticate('linkedin', { session: false }),
-  (req, res) => {
-    const accessToken = jwt.sign(
-      { userId: req.user._id },
-      process.env.JWT_SECRET,
-      { expiresIn: '1h' }
-    );
-    const refreshToken = jwt.sign(
-      { userId: req.user._id },
-      process.env.REFRESH_TOKEN_SECRET,
-      { expiresIn: '7d' }
-    );
-
-    req.user.refreshToken = refreshToken;
-    req.user.save();
-
-    res.redirect(
-      `${process.env.FRONTEND_URL}/auth/callback?accessToken=${accessToken}&refreshToken=${refreshToken}`
-    );
-  }
-);
-
-router.get(
-  '/github',
-  passport.authenticate('github', { scope: ['user:email'] })
-);
-router.get(
-  '/github/callback',
-  passport.authenticate('github', { session: false }),
-  (req, res) => {
-    const accessToken = jwt.sign(
-      { userId: req.user._id },
-      process.env.JWT_SECRET,
-      { expiresIn: '1h' }
-    );
-    const refreshToken = jwt.sign(
-      { userId: req.user._id },
-      process.env.REFRESH_TOKEN_SECRET,
-      { expiresIn: '7d' }
-    );
-
-    req.user.refreshToken = refreshToken;
-    req.user.save();
-
-    res.redirect(
-      `${process.env.FRONTEND_URL}/auth/callback?accessToken=${accessToken}&refreshToken=${refreshToken}`
-    );
-  }
-);
-
-// Logout route
-router.post('/logout', authMiddleware, async (req, res, next) => {
-  try {
-    req.user.refreshToken = undefined;
-    await req.user.save();
-    res.json({ message: 'Logged out successfully' });
-  } catch (error) {
-    next(error);
-  }
-});
-
-// Delete account
-router.delete('/account', authMiddleware, async (req, res, next) => {
-  try {
-    await User.deleteOne({ _id: req.user._id });
-    res.json({ message: 'Account deleted successfully' });
-  } catch (error) {
-    next(error);
-  }
-});
-
-// Get current user
-router.get('/me', authMiddleware, (req, res) => {
-  res.json({
-    user: {
-      id: req.user._id,
-      email: req.user.email,
-      username: req.user.username,
-      badges: req.user.badges,
-    },
   });
+});
+
+// Delete Account
+router.delete('/account', ensureAuthenticated, async (req, res) => {
+  try {
+    await User.findByIdAndDelete(req.user.id);
+    req.logout((err) => {
+      if (err) {
+        logger.error('Logout after account deletion error:', err);
+        return res.status(500).json({ error: 'Server error' });
+      }
+      req.session.destroy((err) => {
+        if (err) {
+          logger.error('Session destroy after account deletion error:', err);
+          return res.status(500).json({ error: 'Server error' });
+        }
+        res.clearCookie('connect.sid');
+        res.json({ message: 'Account deleted successfully' });
+      });
+    });
+  } catch (error) {
+    logger.error('Account deletion error:', error);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// Get User
+router.get('/user', ensureAuthenticated, (req, res) => {
+  const { email, username, isVerified, socialProfiles, badges, languages } = req.user;
+  res.json({ email, username, isVerified, socialProfiles, badges, languages });
+});
+
+// Health Check
+router.get('/health', (req, res) => {
+  res.json({ status: 'ok', uptime: process.uptime() });
 });
 
 module.exports = router;

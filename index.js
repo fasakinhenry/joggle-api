@@ -24,7 +24,7 @@ app.use((err, req, res, next) => {
 connectDB();
 
 // Routes
-app.use('/api/auth', require('./routes/auth'));
+app.use('/api/auth', require('./routes/auth2'));
 
 // Not found route
 app.use((req, res) => {
